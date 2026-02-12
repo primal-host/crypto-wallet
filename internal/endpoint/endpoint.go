@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -61,6 +64,130 @@ func (s *Store) List() []Endpoint {
 	out := make([]Endpoint, len(s.endpoints))
 	copy(out, s.endpoints)
 	return out
+}
+
+var slugRe = regexp.MustCompile(`[^a-z0-9-]+`)
+
+// slugify converts a name to a URL-safe ID.
+func slugify(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
+	s = strings.ReplaceAll(s, " ", "-")
+	s = slugRe.ReplaceAllString(s, "")
+	s = strings.Trim(s, "-")
+	if s == "" {
+		s = "endpoint"
+	}
+	return s
+}
+
+// Add creates a new endpoint, generating an ID from the name.
+func (s *Store) Add(ep Endpoint) (Endpoint, error) {
+	if strings.TrimSpace(ep.Name) == "" {
+		return Endpoint{}, fmt.Errorf("name is required")
+	}
+	if strings.TrimSpace(ep.URL) == "" {
+		return Endpoint{}, fmt.Errorf("url is required")
+	}
+	if _, err := url.ParseRequestURI(ep.URL); err != nil {
+		return Endpoint{}, fmt.Errorf("invalid url: %w", err)
+	}
+	if strings.TrimSpace(ep.Symbol) == "" {
+		return Endpoint{}, fmt.Errorf("symbol is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Generate unique ID from name.
+	base := slugify(ep.Name)
+	id := base
+	for n := 2; s.findLocked(id) != nil; n++ {
+		id = fmt.Sprintf("%s-%d", base, n)
+	}
+	ep.ID = id
+
+	s.endpoints = append(s.endpoints, ep)
+	if err := s.save(); err != nil {
+		// Roll back.
+		s.endpoints = s.endpoints[:len(s.endpoints)-1]
+		return Endpoint{}, err
+	}
+	return ep, nil
+}
+
+// Update replaces an existing endpoint's fields by ID.
+func (s *Store) Update(id string, ep Endpoint) (Endpoint, error) {
+	if strings.TrimSpace(ep.Name) == "" {
+		return Endpoint{}, fmt.Errorf("name is required")
+	}
+	if strings.TrimSpace(ep.URL) == "" {
+		return Endpoint{}, fmt.Errorf("url is required")
+	}
+	if _, err := url.ParseRequestURI(ep.URL); err != nil {
+		return Endpoint{}, fmt.Errorf("invalid url: %w", err)
+	}
+	if strings.TrimSpace(ep.Symbol) == "" {
+		return Endpoint{}, fmt.Errorf("symbol is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, existing := range s.endpoints {
+		if existing.ID == id {
+			ep.ID = id
+			old := s.endpoints[i]
+			s.endpoints[i] = ep
+			if err := s.save(); err != nil {
+				s.endpoints[i] = old
+				return Endpoint{}, err
+			}
+			return ep, nil
+		}
+	}
+	return Endpoint{}, fmt.Errorf("endpoint %q not found", id)
+}
+
+// Delete removes an endpoint by ID.
+func (s *Store) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, ep := range s.endpoints {
+		if ep.ID == id {
+			old := s.endpoints
+			s.endpoints = append(s.endpoints[:i], s.endpoints[i+1:]...)
+			if err := s.save(); err != nil {
+				s.endpoints = old
+				return err
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("endpoint %q not found", id)
+}
+
+// findLocked finds an endpoint by ID. Must be called with mu held.
+func (s *Store) findLocked(id string) *Endpoint {
+	for i := range s.endpoints {
+		if s.endpoints[i].ID == id {
+			return &s.endpoints[i]
+		}
+	}
+	return nil
+}
+
+// save writes the current endpoints to disk. Must be called with mu held.
+func (s *Store) save() error {
+	data, err := json.MarshalIndent(s.endpoints, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal endpoints: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(s.path, data, 0644); err != nil {
+		return fmt.Errorf("write endpoints: %w", err)
+	}
+	return nil
 }
 
 // Poll checks each endpoint with eth_chainId and eth_blockNumber, returning live status.
