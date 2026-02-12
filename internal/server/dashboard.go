@@ -379,6 +379,34 @@ const dashboardHTML = `<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Add Key Modal (choose generate or import) -->
+<div class="modal-overlay" id="addkey-modal">
+  <div class="modal">
+    <h3>Add Key</h3>
+    <p>Generate a new key or import an existing one.</p>
+    <div class="setup-choices">
+      <div class="setup-choice" onclick="generateKey()">
+        <span class="choice-icon">&#9889;</span>
+        <div class="choice-text">
+          <h4>Generate New Key</h4>
+          <p>Create a random private key on this device</p>
+        </div>
+      </div>
+      <div class="setup-choice" onclick="hideModal('addkey-modal'); showImportModal()">
+        <span class="choice-icon">&#128229;</span>
+        <div class="choice-text">
+          <h4>Import Existing Key</h4>
+          <p>Paste a private key you already have</p>
+        </div>
+      </div>
+    </div>
+    <div class="modal-error" id="addkey-error"></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="hideModal('addkey-modal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- Import Key Modal -->
 <div class="modal-overlay" id="import-modal">
   <div class="modal">
@@ -622,7 +650,7 @@ async function setupBiometric() {
     storedKeyCount = 0;
     renderWalletBar();
     hideModal('setup-modal');
-    showModal('import-modal');
+    showModal('addkey-modal');
 
   } catch (err) {
     if (err.name === 'NotAllowedError') {
@@ -686,7 +714,7 @@ async function setupWithPassword() {
     storedKeyCount = 0;
     renderWalletBar();
     hideModal('password-setup-modal');
-    showModal('import-modal');
+    showModal('addkey-modal');
 
   } catch (err) {
     errEl.textContent = 'Setup failed: ' + err.message;
@@ -887,6 +915,55 @@ async function doImportKey() {
   }
 }
 
+// ── Generate Key ───────────────────────────────────────
+async function generateKey() {
+  const errEl = document.getElementById('addkey-error');
+  errEl.style.display = 'none';
+
+  if (!aesKey) {
+    errEl.textContent = 'Wallet is not unlocked.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  try {
+    await ensureEthers();
+    const wallet = ethers.Wallet.createRandom();
+    const key = wallet.privateKey;
+    const address = wallet.address;
+    const label = 'Key ' + (storedKeyCount + 1);
+
+    const { encrypted, iv } = await encryptPrivateKey(key, aesKey);
+
+    await saveEncryptedKey({
+      label: label,
+      address: address,
+      encrypted: Array.from(encrypted),
+      iv: Array.from(iv),
+      createdAt: Date.now()
+    });
+
+    const allKeys = await getEncryptedKeys();
+    const newest = allKeys[allKeys.length - 1];
+    decryptedKeys.push({ id: newest.id, label: label, address: address, key: key });
+    activeKeyIndex = decryptedKeys.length - 1;
+    storedKeyCount = decryptedKeys.length;
+
+    hideModal('addkey-modal');
+    renderWalletBar();
+    refresh();
+
+  } catch (err) {
+    errEl.textContent = 'Failed: ' + err.message;
+    errEl.style.display = 'block';
+  }
+}
+
+function showAddKeyModal() {
+  document.getElementById('addkey-error').style.display = 'none';
+  showModal('addkey-modal');
+}
+
 // ── Wallet Bar Rendering ───────────────────────────────
 function renderWalletBar() {
   const statusEl = document.getElementById('wallet-status');
@@ -924,7 +1001,7 @@ function renderWalletBar() {
     }
 
     actionsEl.innerHTML = html +
-      '<button class="btn btn-primary" onclick="showImportModal()">Import Key</button>' +
+      '<button class="btn btn-primary" onclick="showAddKeyModal()">Add Key</button>' +
       '<button class="btn" onclick="lockWallet()">Lock</button>';
   }
 }
