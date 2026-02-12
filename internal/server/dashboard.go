@@ -331,6 +331,106 @@ const dashboardHTML = `<!DOCTYPE html>
     color: #fecaca;
   }
   .btn-danger:hover { background: #b91c1c; }
+
+  /* Account cards */
+  .acct-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+    margin-top: 2rem;
+  }
+  .acct-section-header h2 { font-size: 1rem; font-weight: 600; color: #a1a1aa; }
+  .acct-card {
+    background: #16181d;
+    border: 1px solid #27272a;
+    border-radius: 0.5rem;
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+  }
+  .acct-card-header {
+    padding: 0.875rem 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+  }
+  .acct-card-header:hover { background: #1a1c23; }
+  .acct-card-header .acct-name {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+    font-size: 0.9375rem;
+  }
+  .acct-card-header .acct-name .chevron {
+    font-size: 0.6875rem;
+    color: #71717a;
+    transition: transform 0.15s;
+    display: inline-block;
+  }
+  .acct-card-header .acct-name .chevron.open { transform: rotate(90deg); }
+  .acct-card-body {
+    display: none;
+    border-top: 1px solid #27272a;
+  }
+  .acct-card-body.open { display: block; }
+  .acct-detail-row {
+    padding: 0.625rem 1.25rem;
+    font-size: 0.8125rem;
+    color: #71717a;
+    border-bottom: 1px solid #1e1e22;
+  }
+  .acct-detail-row .mono { color: #a1a1aa; }
+  .acct-detail-row .detail-stats {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 0.25rem;
+  }
+  .acct-detail-row .detail-stats span { color: #a1a1aa; }
+  .acct-key-section {
+    padding: 0.75rem 1.25rem;
+    border-bottom: 1px solid #1e1e22;
+  }
+  .acct-key-section:last-of-type { border-bottom: none; }
+  .acct-key-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.25rem;
+  }
+  .acct-key-header .key-label { font-weight: 600; font-size: 0.875rem; }
+  .acct-key-header .btn-rename {
+    background: none;
+    border: none;
+    color: #52525b;
+    cursor: pointer;
+    font-size: 0.75rem;
+    padding: 0.125rem 0.375rem;
+    border-radius: 0.25rem;
+    transition: color 0.15s, background 0.15s;
+  }
+  .acct-key-header .btn-rename:hover { color: #e4e4e7; background: #27272a; }
+  .acct-key-address {
+    font-family: monospace;
+    font-size: 0.8rem;
+    color: #71717a;
+    margin-bottom: 0.25rem;
+  }
+  .acct-key-balance {
+    font-family: monospace;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: #e4e4e7;
+  }
+  .acct-key-balance.loading { color: #52525b; }
+  .acct-add-key {
+    padding: 0.625rem 1.25rem;
+    text-align: right;
+    border-top: 1px solid #1e1e22;
+  }
 </style>
 </head>
 <body>
@@ -360,6 +460,8 @@ const dashboardHTML = `<!DOCTYPE html>
       <span class="status-text">Loading endpoints...</span>
     </div>
   </div>
+
+  <div id="accounts-container"></div>
 </main>
 
 <!-- Setup Wallet Modal -->
@@ -482,6 +584,21 @@ const dashboardHTML = `<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Rename Key Modal -->
+<div class="modal-overlay" id="rename-key-modal">
+  <div class="modal">
+    <h3>Rename Key</h3>
+    <input type="hidden" id="rename-key-id" value="">
+    <label for="rename-key-label">Label</label>
+    <input type="text" id="rename-key-label" placeholder="e.g. Main, Test, Hot" autocomplete="off" spellcheck="false">
+    <div class="modal-error" id="rename-key-error"></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="hideModal('rename-key-modal')">Cancel</button>
+      <button class="btn btn-primary" id="btn-rename-save" onclick="doRenameKey()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Import Key Modal -->
 <div class="modal-overlay" id="import-modal">
   <div class="modal">
@@ -507,6 +624,8 @@ let activeKeyIndex = 0;
 let aesKey = null;               // CryptoKey, held while unlocked
 let storedKeyCount = 0;
 let credMethod = '';             // 'prf' | 'password'
+let expandedAccounts = new Set();   // endpoint IDs currently expanded
+let accountBalances = {};           // { [epId]: { [address]: "1.2345 AVAX" } }
 
 // ── Constants ──────────────────────────────────────────
 const PRF_SALT = new TextEncoder().encode('wallet-encryption-v1');
@@ -915,8 +1034,11 @@ function lockWallet() {
   aesKey = null;
   activeKeyIndex = 0;
   walletState = 'locked';
+  expandedAccounts.clear();
+  accountBalances = {};
   renderWalletBar();
   renderEndpoints();
+  renderAccounts();
 }
 
 // ── Import Key ─────────────────────────────────────────
@@ -1101,6 +1223,7 @@ async function refresh() {
     const data = await resp.json();
     endpoints = data.endpoints || [];
     renderEndpoints();
+    renderAccounts();
   } catch (err) {
     console.error('status poll failed:', err);
   }
@@ -1320,6 +1443,175 @@ async function confirmDeleteEndpoint() {
   }
 }
 
+// ── Accounts Section ────────────────────────────────────
+function renderAccounts() {
+  const container = document.getElementById('accounts-container');
+  if (walletState !== 'unlocked' || decryptedKeys.length === 0 || endpoints.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  let html = '<div class="acct-section-header"><h2>Accounts</h2></div>';
+
+  for (const ep of endpoints) {
+    const isOpen = expandedAccounts.has(ep.id);
+    const statusClass = ep.online ? 'status-online' : 'status-offline';
+    const statusLabel = ep.online ? 'Online' : 'Offline';
+
+    html += '<div class="acct-card">';
+    html +=   '<div class="acct-card-header" onclick="toggleAccount(\'' + esc(ep.id) + '\')">';
+    html +=     '<span class="acct-name">';
+    html +=       '<span class="chevron' + (isOpen ? ' open' : '') + '">&#9654;</span> ';
+    html +=       esc(ep.name);
+    html +=     '</span>';
+    html +=     '<span class="' + statusClass + '">';
+    html +=       '<span class="status-dot"></span>';
+    html +=       '<span class="status-text">' + statusLabel + '</span>';
+    html +=     '</span>';
+    html +=   '</div>';
+
+    html +=   '<div class="acct-card-body' + (isOpen ? ' open' : '') + '">';
+
+    // Connection details
+    const chainId = ep.chain_id ? hexToDecimal(ep.chain_id) : '\u2014';
+    const blockNum = ep.block_number ? hexToDecimal(ep.block_number) : '\u2014';
+    const latencyClass = ep.latency_ms < 200 ? 'fast' : ep.latency_ms < 1000 ? 'medium' : 'slow';
+    html +=     '<div class="acct-detail-row">';
+    html +=       'RPC: <span class="mono">' + esc(abbreviateURL(ep.url)) + '</span>';
+    html +=       '<div class="detail-stats">';
+    html +=         '<span>Chain ID: ' + chainId + '</span>';
+    html +=         '<span>Block: ' + formatNumber(blockNum) + '</span>';
+    html +=         '<span class="latency ' + latencyClass + '">' + ep.latency_ms + ' ms</span>';
+    html +=       '</div>';
+    html +=     '</div>';
+
+    // Key sections
+    for (const k of decryptedKeys) {
+      const balKey = accountBalances[ep.id] && accountBalances[ep.id][k.address];
+      const balText = balKey || '...';
+      const balClass = balKey ? '' : ' loading';
+
+      html +=   '<div class="acct-key-section">';
+      html +=     '<div class="acct-key-header">';
+      html +=       '<span class="key-label">' + esc(k.label) + '</span>';
+      html +=       '<button class="btn-rename" onclick="event.stopPropagation(); showRenameModal(' + k.id + ', \'' + esc(k.label).replace(/'/g, "\\'") + '\')">rename</button>';
+      html +=     '</div>';
+      html +=     '<div class="acct-key-address">' + k.address + '</div>';
+      html +=     '<div class="acct-key-balance' + balClass + '" data-acct-bal="' + esc(ep.id) + '-' + esc(k.address) + '">' + balText + '</div>';
+      html +=   '</div>';
+    }
+
+    // Add key button
+    html +=     '<div class="acct-add-key">';
+    html +=       '<button class="btn" onclick="event.stopPropagation(); showAddKeyModal()">+ Add Key</button>';
+    html +=     '</div>';
+
+    html +=   '</div>'; // acct-card-body
+    html += '</div>';   // acct-card
+  }
+
+  container.innerHTML = html;
+
+  // Fetch balances for expanded cards
+  for (const epId of expandedAccounts) {
+    const ep = endpoints.find(e => e.id === epId);
+    if (ep && ep.online) fetchAccountBalances(epId);
+  }
+}
+
+function toggleAccount(epId) {
+  if (expandedAccounts.has(epId)) {
+    expandedAccounts.delete(epId);
+  } else {
+    expandedAccounts.add(epId);
+  }
+  renderAccounts();
+}
+
+async function fetchAccountBalances(epId) {
+  const ep = endpoints.find(e => e.id === epId);
+  if (!ep || !ep.online) return;
+
+  if (!accountBalances[epId]) accountBalances[epId] = {};
+
+  for (const k of decryptedKeys) {
+    try {
+      const resp = await fetch('/api/rpc/' + epId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'eth_getBalance', params: [k.address, 'latest'] })
+      });
+      const data = await resp.json();
+      if (data.result) {
+        const formatted = formatBalance(data.result) + ' ' + (ep.symbol || 'ETH');
+        accountBalances[epId][k.address] = formatted;
+        const el = document.querySelector('[data-acct-bal="' + ep.id + '-' + k.address + '"]');
+        if (el) {
+          el.textContent = formatted;
+          el.classList.remove('loading');
+        }
+      }
+    } catch (err) {
+      console.error('account balance fetch failed:', err);
+    }
+  }
+}
+
+function showRenameModal(keyId, currentLabel) {
+  document.getElementById('rename-key-id').value = keyId;
+  document.getElementById('rename-key-label').value = currentLabel;
+  document.getElementById('rename-key-error').style.display = 'none';
+  showModal('rename-key-modal');
+  document.getElementById('rename-key-label').focus();
+}
+
+async function doRenameKey() {
+  const keyId = parseInt(document.getElementById('rename-key-id').value, 10);
+  const newLabel = document.getElementById('rename-key-label').value.trim();
+  const errEl = document.getElementById('rename-key-error');
+  const btn = document.getElementById('btn-rename-save');
+  errEl.style.display = 'none';
+
+  if (!newLabel) {
+    errEl.textContent = 'Label cannot be empty.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    await updateKeyLabel(keyId, newLabel);
+    // Update in-memory
+    const dk = decryptedKeys.find(k => k.id === keyId);
+    if (dk) dk.label = newLabel;
+    hideModal('rename-key-modal');
+    renderWalletBar();
+    renderAccounts();
+  } catch (err) {
+    errEl.textContent = 'Failed: ' + err.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function updateKeyLabel(id, newLabel) {
+  const db = await openVaultDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('keys', 'readwrite');
+    const store = tx.objectStore('keys');
+    const req = store.get(id);
+    req.onsuccess = () => {
+      const rec = req.result;
+      if (!rec) { reject(new Error('Key not found')); return; }
+      rec.label = newLabel;
+      store.put(rec);
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 // ── Helpers ────────────────────────────────────────────
 function hexToDecimal(hex) {
   if (!hex || hex === '0x') return '0';
@@ -1387,6 +1679,8 @@ document.addEventListener('keydown', (e) => {
     unlockWithPassword();
   } else if (document.getElementById('import-modal').classList.contains('active')) {
     doImportKey();
+  } else if (document.getElementById('rename-key-modal').classList.contains('active')) {
+    doRenameKey();
   } else if (document.getElementById('endpoint-modal').classList.contains('active')) {
     saveEndpoint();
   }
