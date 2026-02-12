@@ -36,19 +36,6 @@ const dashboardHTML = `<!DOCTYPE html>
     flex: 1;
   }
 
-  /* Warning banner */
-  .warning-banner {
-    padding: 0.75rem 1.25rem;
-    margin-bottom: 1rem;
-    background: #451a03;
-    border: 1px solid #92400e;
-    border-radius: 0.5rem;
-    color: #fbbf24;
-    font-size: 0.8125rem;
-    display: none;
-  }
-  .warning-banner.visible { display: block; }
-
   /* Wallet identity bar */
   .wallet-bar {
     display: flex;
@@ -87,6 +74,14 @@ const dashboardHTML = `<!DOCTYPE html>
     font-size: 0.6875rem;
     color: #a1a1aa;
     background: #27272a;
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.75rem;
+    white-space: nowrap;
+  }
+  .wallet-bar .method-badge {
+    font-size: 0.6875rem;
+    color: #71717a;
+    background: #1e1e22;
     padding: 0.125rem 0.5rem;
     border-radius: 0.75rem;
     white-space: nowrap;
@@ -196,11 +191,29 @@ const dashboardHTML = `<!DOCTYPE html>
   }
   .btn-primary:hover { background: #2563eb; }
   .btn-primary:disabled { background: #1e3a5f; border-color: #1e3a5f; }
-  .btn-danger {
-    background: #991b1b;
-    border-color: #991b1b;
+
+  /* Setup choices */
+  .setup-choices {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
   }
-  .btn-danger:hover { background: #b91c1c; }
+  .setup-choice {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.75rem 1rem;
+    background: #0f1117;
+    border: 1px solid #27272a;
+    border-radius: 0.375rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .setup-choice:hover { border-color: #3f3f46; }
+  .setup-choice .choice-icon { font-size: 1.5rem; flex-shrink: 0; }
+  .setup-choice .choice-text h4 { font-size: 0.875rem; margin-bottom: 0.125rem; }
+  .setup-choice .choice-text p { font-size: 0.75rem; color: #71717a; }
 
   /* Empty state */
   .empty-state {
@@ -292,10 +305,6 @@ const dashboardHTML = `<!DOCTYPE html>
 </header>
 
 <main>
-  <div class="warning-banner" id="prf-warning">
-    Your browser does not support WebAuthn PRF. Biometric wallet encryption is unavailable.
-  </div>
-
   <div class="wallet-bar" id="wallet-bar">
     <div class="bar-left">
       <span id="wallet-status" class="no-wallet">Checking wallet...</span>
@@ -315,12 +324,57 @@ const dashboardHTML = `<!DOCTYPE html>
 <div class="modal-overlay" id="setup-modal">
   <div class="modal">
     <h3>Setup Wallet</h3>
-    <p>This will create a biometric credential (Face ID / Touch ID) to protect your private keys. Keys are encrypted and stored locally — they never leave this device.</p>
-    <p>You will be prompted for biometric verification twice: once to create the credential, and once to derive the encryption key.</p>
+    <p>Protect your private keys with encryption. Keys are stored locally and never leave this device.</p>
+    <div class="setup-choices">
+      <div class="setup-choice" onclick="setupBiometric()">
+        <span class="choice-icon">&#128275;</span>
+        <div class="choice-text">
+          <h4>Biometric (Recommended)</h4>
+          <p>Face ID / Touch ID encrypts your keys</p>
+        </div>
+      </div>
+      <div class="setup-choice" onclick="showPasswordSetup()">
+        <span class="choice-icon">&#128273;</span>
+        <div class="choice-text">
+          <h4>Password</h4>
+          <p>Enter a password to encrypt your keys</p>
+        </div>
+      </div>
+    </div>
     <div class="modal-error" id="setup-error"></div>
     <div class="modal-footer">
       <button class="btn" onclick="hideModal('setup-modal')">Cancel</button>
-      <button class="btn btn-primary" id="btn-setup-confirm" onclick="setupWallet()">Setup with Biometrics</button>
+    </div>
+  </div>
+</div>
+
+<!-- Password Setup Modal -->
+<div class="modal-overlay" id="password-setup-modal">
+  <div class="modal">
+    <h3>Set Encryption Password</h3>
+    <p>This password will be required to unlock your wallet. Choose something strong — there is no recovery if you forget it.</p>
+    <label for="setup-password">Password</label>
+    <input type="password" id="setup-password" placeholder="Enter password" autocomplete="off">
+    <label for="setup-password-confirm">Confirm Password</label>
+    <input type="password" id="setup-password-confirm" placeholder="Confirm password" autocomplete="off">
+    <div class="modal-error" id="password-setup-error"></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="hideModal('password-setup-modal'); showModal('setup-modal')">Back</button>
+      <button class="btn btn-primary" id="btn-password-setup" onclick="setupWithPassword()">Set Password</button>
+    </div>
+  </div>
+</div>
+
+<!-- Password Unlock Modal -->
+<div class="modal-overlay" id="password-unlock-modal">
+  <div class="modal">
+    <h3>Unlock Wallet</h3>
+    <label for="unlock-password">Password</label>
+    <input type="password" id="unlock-password" placeholder="Enter password" autocomplete="off">
+    <div class="modal-error" id="password-unlock-error"></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="hideModal('password-unlock-modal')">Cancel</button>
+      <button class="btn btn-primary" id="btn-password-unlock" onclick="unlockWithPassword()">Unlock</button>
     </div>
   </div>
 </div>
@@ -345,25 +399,27 @@ const dashboardHTML = `<!DOCTYPE html>
 // ── State ──────────────────────────────────────────────
 let endpoints = [];
 let walletState = 'none';       // 'none' | 'locked' | 'unlocked'
-let decryptedKeys = [];          // [{label, address, key}] — in-memory only
+let decryptedKeys = [];          // [{id, label, address, key}] — in-memory only
 let activeKeyIndex = 0;
 let aesKey = null;               // CryptoKey, held while unlocked
 let storedKeyCount = 0;
+let credMethod = '';             // 'prf' | 'password'
 
 // ── Constants ──────────────────────────────────────────
 const PRF_SALT = new TextEncoder().encode('wallet-encryption-v1');
 const HKDF_INFO = new TextEncoder().encode('AES-GCM Wallet Encryption Key V1');
+const PBKDF2_ITERATIONS = 600000;
 const DB_NAME = 'wallet-vault';
 const DB_VERSION = 1;
 
 // ── Init ───────────────────────────────────────────────
 (async function init() {
-  // Check for existing credential to determine initial state.
   try {
     const cred = await getCredential();
     if (cred) {
       const keys = await getEncryptedKeys();
       storedKeyCount = keys.length;
+      credMethod = cred.method || 'prf';
       walletState = 'locked';
     }
   } catch (e) {
@@ -442,26 +498,27 @@ async function deleteEncryptedKey(id) {
   });
 }
 
-// ── WebAuthn + Crypto ──────────────────────────────────
-async function checkPRFSupport() {
-  if (!window.PublicKeyCredential) return false;
-  // If the static method exists, use it for a definitive answer.
-  if (PublicKeyCredential.getClientCapabilities) {
-    try {
-      const caps = await PublicKeyCredential.getClientCapabilities();
-      return caps['prf'] === true;
-    } catch (e) { /* fall through */ }
-  }
-  // Otherwise we assume support and will detect at create-time.
-  return true;
-}
-
-async function deriveAESKey(prfOutput) {
+// ── Crypto Helpers ─────────────────────────────────────
+async function deriveAESKeyFromPRF(prfOutput) {
   const keyMaterial = await crypto.subtle.importKey(
     'raw', prfOutput, 'HKDF', false, ['deriveKey']
   );
   return crypto.subtle.deriveKey(
     { name: 'HKDF', salt: PRF_SALT, info: HKDF_INFO, hash: 'SHA-256' },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function deriveAESKeyFromPassword(password, salt) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
     false,
@@ -485,22 +542,19 @@ async function decryptPrivateKey(encrypted, iv, key) {
   return new TextDecoder().decode(decrypted);
 }
 
-// ── Setup Wallet ───────────────────────────────────────
-async function setupWallet() {
+// ── Biometric Setup ────────────────────────────────────
+async function setupBiometric() {
   const errEl = document.getElementById('setup-error');
-  const btn = document.getElementById('btn-setup-confirm');
   errEl.style.display = 'none';
-  btn.disabled = true;
-  btn.textContent = 'Creating credential...';
+
+  if (!window.PublicKeyCredential) {
+    errEl.textContent = 'WebAuthn is not available in this browser. Use password setup instead.';
+    errEl.style.display = 'block';
+    return;
+  }
 
   try {
-    // 1. Check PRF support.
-    const prfOk = await checkPRFSupport();
-    if (!prfOk) {
-      throw new Error('Your browser does not support the PRF extension.');
-    }
-
-    // 2. Create credential with PRF extension.
+    // 1. Create credential with PRF extension.
     const userId = crypto.getRandomValues(new Uint8Array(32));
     const credential = await navigator.credentials.create({
       publicKey: {
@@ -512,8 +566,8 @@ async function setupWallet() {
         },
         challenge: crypto.getRandomValues(new Uint8Array(32)),
         pubKeyCredParams: [
-          { type: 'public-key', alg: -7 },   // ES256
-          { type: 'public-key', alg: -257 }  // RS256
+          { type: 'public-key', alg: -7 },
+          { type: 'public-key', alg: -257 }
         ],
         authenticatorSelection: {
           residentKey: 'preferred',
@@ -523,14 +577,10 @@ async function setupWallet() {
       }
     });
 
-    // 3. Check PRF was enabled.
-    const createExts = credential.getClientExtensionResults();
-    if (!createExts.prf || !createExts.prf.enabled) {
-      throw new Error('PRF extension not supported by this authenticator. Try a different browser or device.');
-    }
+    // 2. Try PRF eval regardless of prf.enabled — some browsers
+    //    (Safari) report enabled:false but support PRF at assertion time.
+    const transports = credential.response.getTransports ? credential.response.getTransports() : [];
 
-    // 4. Get PRF output via .get() to derive the encryption key.
-    btn.textContent = 'Deriving key...';
     const assertion = await navigator.credentials.get({
       publicKey: {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
@@ -538,7 +588,7 @@ async function setupWallet() {
         allowCredentials: [{
           type: 'public-key',
           id: credential.rawId,
-          transports: credential.response.getTransports ? credential.response.getTransports() : []
+          transports: transports
         }],
         userVerification: 'required',
         extensions: {
@@ -547,31 +597,31 @@ async function setupWallet() {
       }
     });
 
-    const getExts = assertion.getClientExtensionResults();
-    if (!getExts.prf || !getExts.prf.results || !getExts.prf.results.first) {
-      throw new Error('PRF evaluation failed. Your authenticator may not support this feature.');
+    const exts = assertion.getClientExtensionResults();
+    if (!exts.prf || !exts.prf.results || !exts.prf.results.first) {
+      errEl.textContent = 'Your authenticator does not support PRF encryption. Use password setup instead.';
+      errEl.style.display = 'block';
+      return;
     }
 
-    // 5. Derive AES key.
-    aesKey = await deriveAESKey(getExts.prf.results.first);
+    // 3. PRF works — derive AES key and store credential.
+    aesKey = await deriveAESKeyFromPRF(exts.prf.results.first);
 
-    // 6. Store credential info in IndexedDB.
     await saveCredential({
       id: 'primary',
+      method: 'prf',
       credentialId: Array.from(new Uint8Array(credential.rawId)),
       rpId: location.hostname,
-      transports: credential.response.getTransports ? credential.response.getTransports() : [],
+      transports: transports,
       createdAt: Date.now()
     });
 
-    // 7. Transition to unlocked state (no keys yet).
+    credMethod = 'prf';
     walletState = 'unlocked';
     decryptedKeys = [];
     storedKeyCount = 0;
     renderWalletBar();
     hideModal('setup-modal');
-
-    // 8. Prompt to import first key.
     showModal('import-modal');
 
   } catch (err) {
@@ -581,14 +631,81 @@ async function setupWallet() {
       errEl.textContent = err.message;
     }
     errEl.style.display = 'block';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Setup with Biometrics';
   }
 }
 
-// ── Unlock Wallet ──────────────────────────────────────
+// ── Password Setup ─────────────────────────────────────
+function showPasswordSetup() {
+  hideModal('setup-modal');
+  document.getElementById('setup-password').value = '';
+  document.getElementById('setup-password-confirm').value = '';
+  document.getElementById('password-setup-error').style.display = 'none';
+  showModal('password-setup-modal');
+}
+
+async function setupWithPassword() {
+  const pw = document.getElementById('setup-password').value;
+  const confirm = document.getElementById('setup-password-confirm').value;
+  const errEl = document.getElementById('password-setup-error');
+  const btn = document.getElementById('btn-password-setup');
+  errEl.style.display = 'none';
+
+  if (!pw) {
+    errEl.textContent = 'Please enter a password.';
+    errEl.style.display = 'block';
+    return;
+  }
+  if (pw.length < 8) {
+    errEl.textContent = 'Password must be at least 8 characters.';
+    errEl.style.display = 'block';
+    return;
+  }
+  if (pw !== confirm) {
+    errEl.textContent = 'Passwords do not match.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Deriving key...';
+
+  try {
+    const salt = crypto.getRandomValues(new Uint8Array(32));
+    aesKey = await deriveAESKeyFromPassword(pw, salt);
+
+    await saveCredential({
+      id: 'primary',
+      method: 'password',
+      pbkdf2Salt: Array.from(salt),
+      createdAt: Date.now()
+    });
+
+    credMethod = 'password';
+    walletState = 'unlocked';
+    decryptedKeys = [];
+    storedKeyCount = 0;
+    renderWalletBar();
+    hideModal('password-setup-modal');
+    showModal('import-modal');
+
+  } catch (err) {
+    errEl.textContent = 'Setup failed: ' + err.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Set Password';
+  }
+}
+
+// ── Unlock ─────────────────────────────────────────────
 async function unlockWallet() {
+  if (credMethod === 'password') {
+    document.getElementById('unlock-password').value = '';
+    document.getElementById('password-unlock-error').style.display = 'none';
+    showModal('password-unlock-modal');
+    return;
+  }
+  // PRF unlock.
   const btn = document.querySelector('#wallet-actions .btn-primary');
   if (btn) { btn.disabled = true; btn.textContent = 'Unlocking...'; }
 
@@ -597,7 +714,6 @@ async function unlockWallet() {
     if (!stored) throw new Error('No credential found.');
 
     const credentialId = new Uint8Array(stored.credentialId);
-
     const assertion = await navigator.credentials.get({
       publicKey: {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
@@ -619,43 +735,76 @@ async function unlockWallet() {
       throw new Error('PRF evaluation failed.');
     }
 
-    aesKey = await deriveAESKey(exts.prf.results.first);
-
-    // Decrypt all stored keys.
-    const encryptedKeys = await getEncryptedKeys();
-    decryptedKeys = [];
-    for (const rec of encryptedKeys) {
-      try {
-        const plaintext = await decryptPrivateKey(
-          new Uint8Array(rec.encrypted),
-          new Uint8Array(rec.iv),
-          aesKey
-        );
-        decryptedKeys.push({ id: rec.id, label: rec.label, address: rec.address, key: plaintext });
-      } catch (e) {
-        console.error('Failed to decrypt key ' + rec.label + ':', e);
-      }
-    }
-
-    activeKeyIndex = 0;
-    storedKeyCount = decryptedKeys.length;
+    aesKey = await deriveAESKeyFromPRF(exts.prf.results.first);
+    await decryptAllKeys();
     walletState = 'unlocked';
     renderWalletBar();
     refresh();
 
   } catch (err) {
-    if (err.name === 'NotAllowedError') {
-      console.log('Biometric prompt cancelled.');
-    } else {
+    if (err.name !== 'NotAllowedError') {
       console.error('Unlock failed:', err);
     }
     renderWalletBar();
   }
 }
 
-// ── Lock Wallet ────────────────────────────────────────
+async function unlockWithPassword() {
+  const pw = document.getElementById('unlock-password').value;
+  const errEl = document.getElementById('password-unlock-error');
+  const btn = document.getElementById('btn-password-unlock');
+  errEl.style.display = 'none';
+
+  if (!pw) {
+    errEl.textContent = 'Please enter your password.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Unlocking...';
+
+  try {
+    const stored = await getCredential();
+    if (!stored || !stored.pbkdf2Salt) throw new Error('No password credential found.');
+
+    const salt = new Uint8Array(stored.pbkdf2Salt);
+    aesKey = await deriveAESKeyFromPassword(pw, salt);
+
+    // Try decrypting — if the password is wrong, decryption will fail.
+    await decryptAllKeys();
+    walletState = 'unlocked';
+    renderWalletBar();
+    hideModal('password-unlock-modal');
+    refresh();
+
+  } catch (err) {
+    errEl.textContent = 'Wrong password or decryption failed.';
+    errEl.style.display = 'block';
+    aesKey = null;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Unlock';
+  }
+}
+
+async function decryptAllKeys() {
+  const encryptedKeys = await getEncryptedKeys();
+  decryptedKeys = [];
+  for (const rec of encryptedKeys) {
+    const plaintext = await decryptPrivateKey(
+      new Uint8Array(rec.encrypted),
+      new Uint8Array(rec.iv),
+      aesKey
+    );
+    decryptedKeys.push({ id: rec.id, label: rec.label, address: rec.address, key: plaintext });
+  }
+  activeKeyIndex = 0;
+  storedKeyCount = decryptedKeys.length;
+}
+
+// ── Lock ───────────────────────────────────────────────
 function lockWallet() {
-  // Clear sensitive data from memory.
   for (let i = 0; i < decryptedKeys.length; i++) {
     decryptedKeys[i].key = '';
   }
@@ -702,15 +851,12 @@ async function doImportKey() {
   btn.textContent = 'Encrypting...';
 
   try {
-    // Derive address with ethers.js.
     await ensureEthers();
     const wallet = new ethers.Wallet(key);
     const address = wallet.address;
 
-    // Encrypt the key.
     const { encrypted, iv } = await encryptPrivateKey(key, aesKey);
 
-    // Store in IndexedDB.
     await saveEncryptedKey({
       label: label,
       address: address,
@@ -719,14 +865,12 @@ async function doImportKey() {
       createdAt: Date.now()
     });
 
-    // Add to in-memory decrypted keys.
     const allKeys = await getEncryptedKeys();
     const newest = allKeys[allKeys.length - 1];
     decryptedKeys.push({ id: newest.id, label: label, address: address, key: key });
     activeKeyIndex = decryptedKeys.length - 1;
     storedKeyCount = decryptedKeys.length;
 
-    // Clear inputs and close modal.
     labelInput.value = '';
     keyInput.value = '';
     errEl.style.display = 'none';
@@ -753,9 +897,11 @@ function renderWalletBar() {
     statusEl.textContent = 'No wallet configured';
     actionsEl.innerHTML = '<button class="btn btn-primary" onclick="showModal(\'setup-modal\')">Setup Wallet</button>';
   } else if (walletState === 'locked') {
+    const methodLabel = credMethod === 'prf' ? 'biometric' : 'password';
     statusEl.className = 'label';
     statusEl.innerHTML = '<span class="lock-icon">&#128274;</span> Wallet locked' +
-      (storedKeyCount > 0 ? ' <span class="key-badge">' + storedKeyCount + ' key' + (storedKeyCount !== 1 ? 's' : '') + '</span>' : '');
+      (storedKeyCount > 0 ? ' <span class="key-badge">' + storedKeyCount + ' key' + (storedKeyCount !== 1 ? 's' : '') + '</span>' : '') +
+      ' <span class="method-badge">' + methodLabel + '</span>';
     actionsEl.innerHTML = '<button class="btn btn-primary" onclick="unlockWallet()">Unlock</button>';
   } else if (walletState === 'unlocked') {
     let html = '';
@@ -972,6 +1118,18 @@ document.querySelectorAll('.modal-overlay').forEach(overlay => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     document.querySelectorAll('.modal-overlay.active').forEach(m => m.classList.remove('active'));
+  }
+});
+
+// Submit password modals on Enter key.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  if (document.getElementById('password-setup-modal').classList.contains('active')) {
+    setupWithPassword();
+  } else if (document.getElementById('password-unlock-modal').classList.contains('active')) {
+    unlockWithPassword();
+  } else if (document.getElementById('import-modal').classList.contains('active')) {
+    doImportKey();
   }
 });
 </script>
