@@ -15,6 +15,9 @@ func (s *Server) routes() {
 	s.echo.GET("/", s.handleDashboard)
 	s.echo.GET("/api/status", s.handleStatus)
 	s.echo.POST("/api/rpc/:id", s.handleRPC)
+	s.echo.POST("/api/endpoints", s.handleAddEndpoint)
+	s.echo.PUT("/api/endpoints/:id", s.handleUpdateEndpoint)
+	s.echo.DELETE("/api/endpoints/:id", s.handleDeleteEndpoint)
 }
 
 func (s *Server) handleHealth(c echo.Context) error {
@@ -71,4 +74,46 @@ func (s *Server) handleRPC(c echo.Context) error {
 
 	// Return the raw result so the frontend can handle it.
 	return c.JSON(http.StatusOK, map[string]json.RawMessage{"result": result})
+}
+
+// handleAddEndpoint creates a new endpoint.
+func (s *Server) handleAddEndpoint(c echo.Context) error {
+	var req endpoint.Endpoint
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
+	}
+	ep, err := s.store.Add(req)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusCreated, ep)
+}
+
+// handleUpdateEndpoint updates an existing endpoint.
+func (s *Server) handleUpdateEndpoint(c echo.Context) error {
+	id := c.Param("id")
+	var req endpoint.Endpoint
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
+	}
+	ep, err := s.store.Update(id, req)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+		}
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, ep)
+}
+
+// handleDeleteEndpoint removes an endpoint.
+func (s *Server) handleDeleteEndpoint(c echo.Context) error {
+	id := c.Param("id")
+	if err := s.store.Delete(id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "deleted"})
 }
