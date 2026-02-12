@@ -4,6 +4,8 @@ services:
     image: crypto-wallet
     container_name: crypto-wallet
     restart: unless-stopped
+    volumes:
+      - ./endpoints.json:/etc/wallet/endpoints.json
     networks:
       - infra
     labels:
