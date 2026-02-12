@@ -293,6 +293,44 @@ const dashboardHTML = `<!DOCTYPE html>
   .latency.fast { color: #4ade80; }
   .latency.medium { color: #facc15; }
   .latency.slow { color: #fb923c; }
+
+  /* Section header */
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+  }
+  .section-header h2 { font-size: 1rem; font-weight: 600; color: #a1a1aa; }
+
+  /* Card action buttons */
+  .ep-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-left: 0.5rem;
+  }
+  .btn-icon {
+    background: none;
+    border: none;
+    color: #52525b;
+    cursor: pointer;
+    padding: 0.125rem 0.25rem;
+    font-size: 0.8125rem;
+    line-height: 1;
+    border-radius: 0.25rem;
+    transition: color 0.15s, background 0.15s;
+  }
+  .btn-icon:hover { color: #e4e4e7; background: #27272a; }
+  .btn-icon.danger:hover { color: #f87171; background: #2a1515; }
+
+  /* Delete confirm */
+  .btn-danger {
+    background: #991b1b;
+    border-color: #991b1b;
+    color: #fecaca;
+  }
+  .btn-danger:hover { background: #b91c1c; }
 </style>
 </head>
 <body>
@@ -312,6 +350,10 @@ const dashboardHTML = `<!DOCTYPE html>
     <div class="bar-right" id="wallet-actions"></div>
   </div>
 
+  <div class="section-header">
+    <h2>Endpoints</h2>
+    <button class="btn btn-primary" onclick="showEndpointModal()">+ Add Endpoint</button>
+  </div>
   <div id="endpoints-container">
     <div class="empty-state status-checking">
       <span class="status-dot"></span>
@@ -375,6 +417,39 @@ const dashboardHTML = `<!DOCTYPE html>
     <div class="modal-footer">
       <button class="btn" onclick="hideModal('password-unlock-modal')">Cancel</button>
       <button class="btn btn-primary" id="btn-password-unlock" onclick="unlockWithPassword()">Unlock</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add/Edit Endpoint Modal -->
+<div class="modal-overlay" id="endpoint-modal">
+  <div class="modal">
+    <h3 id="endpoint-modal-title">Add Endpoint</h3>
+    <input type="hidden" id="endpoint-edit-id" value="">
+    <label for="endpoint-name">Name</label>
+    <input type="text" id="endpoint-name" placeholder="e.g. My Local Node" autocomplete="off" spellcheck="false">
+    <label for="endpoint-url">RPC URL</label>
+    <input type="text" id="endpoint-url" placeholder="e.g. http://192.168.1.100:9650/ext/bc/C/rpc" autocomplete="off" spellcheck="false">
+    <label for="endpoint-symbol">Symbol</label>
+    <input type="text" id="endpoint-symbol" placeholder="e.g. AVAX, ETH" autocomplete="off" spellcheck="false">
+    <div class="modal-error" id="endpoint-error"></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="hideModal('endpoint-modal')">Cancel</button>
+      <button class="btn btn-primary" id="btn-endpoint-save" onclick="saveEndpoint()">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Endpoint Confirm Modal -->
+<div class="modal-overlay" id="delete-endpoint-modal">
+  <div class="modal">
+    <h3>Delete Endpoint</h3>
+    <input type="hidden" id="delete-endpoint-id" value="">
+    <p>Are you sure you want to delete <strong id="delete-endpoint-name"></strong>? This cannot be undone.</p>
+    <div class="modal-error" id="delete-endpoint-error"></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="hideModal('delete-endpoint-modal')">Cancel</button>
+      <button class="btn btn-danger" id="btn-endpoint-delete" onclick="confirmDeleteEndpoint()">Delete</button>
     </div>
   </div>
 </div>
@@ -1040,7 +1115,7 @@ function renderEndpoints() {
     container.innerHTML =
       '<div class="empty-state">' +
         '<h2>No Endpoints Configured</h2>' +
-        '<p>Add RPC endpoints to endpoints.json to get started.</p>' +
+        '<p>Click "+ Add Endpoint" above to get started.</p>' +
       '</div>';
     return;
   }
@@ -1057,10 +1132,16 @@ function renderEndpoints() {
     html += '<div class="ep-card">';
     html +=   '<div class="ep-card-header">';
     html +=     '<h3>' + esc(ep.name) + '</h3>';
-    html +=     '<span class="' + statusClass + '">';
-    html +=       '<span class="status-dot"></span>';
-    html +=       '<span class="status-text">' + statusLabel + '</span>';
-    html +=     '</span>';
+    html +=     '<div style="display:flex;align-items:center;gap:0.25rem">';
+    html +=       '<span class="' + statusClass + '">';
+    html +=         '<span class="status-dot"></span>';
+    html +=         '<span class="status-text">' + statusLabel + '</span>';
+    html +=       '</span>';
+    html +=       '<div class="ep-card-actions">';
+    html +=         '<button class="btn-icon" onclick="editEndpoint(\'' + esc(ep.id) + '\')" title="Edit">&#9998;</button>';
+    html +=         '<button class="btn-icon danger" onclick="deleteEndpoint(\'' + esc(ep.id) + '\', \'' + esc(ep.name) + '\')" title="Delete">&#10005;</button>';
+    html +=       '</div>';
+    html +=     '</div>';
     html +=   '</div>';
     html +=   '<div class="ep-card-body">';
     html +=     '<div class="ep-row">';
@@ -1140,6 +1221,105 @@ function ensureEthers() {
   });
 }
 
+// ── Endpoint Management ─────────────────────────────────
+function showEndpointModal(editId) {
+  document.getElementById('endpoint-edit-id').value = editId || '';
+  document.getElementById('endpoint-name').value = '';
+  document.getElementById('endpoint-url').value = '';
+  document.getElementById('endpoint-symbol').value = '';
+  document.getElementById('endpoint-error').style.display = 'none';
+
+  if (editId) {
+    const ep = endpoints.find(e => e.id === editId);
+    if (ep) {
+      document.getElementById('endpoint-name').value = ep.name;
+      document.getElementById('endpoint-url').value = ep.url;
+      document.getElementById('endpoint-symbol').value = ep.symbol;
+    }
+    document.getElementById('endpoint-modal-title').textContent = 'Edit Endpoint';
+    document.getElementById('btn-endpoint-save').textContent = 'Save';
+  } else {
+    document.getElementById('endpoint-modal-title').textContent = 'Add Endpoint';
+    document.getElementById('btn-endpoint-save').textContent = 'Add';
+  }
+  showModal('endpoint-modal');
+}
+
+function editEndpoint(id) {
+  showEndpointModal(id);
+}
+
+async function saveEndpoint() {
+  const editId = document.getElementById('endpoint-edit-id').value;
+  const name = document.getElementById('endpoint-name').value.trim();
+  const url = document.getElementById('endpoint-url').value.trim();
+  const symbol = document.getElementById('endpoint-symbol').value.trim();
+  const errEl = document.getElementById('endpoint-error');
+  const btn = document.getElementById('btn-endpoint-save');
+  errEl.style.display = 'none';
+
+  if (!name || !url || !symbol) {
+    errEl.textContent = 'All fields are required.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    const isEdit = !!editId;
+    const resp = await fetch(isEdit ? '/api/endpoints/' + editId : '/api/endpoints', {
+      method: isEdit ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, url, symbol })
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      errEl.textContent = data.error || 'Failed to save endpoint.';
+      errEl.style.display = 'block';
+      return;
+    }
+    hideModal('endpoint-modal');
+    refresh();
+  } catch (err) {
+    errEl.textContent = 'Request failed: ' + err.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function deleteEndpoint(id, name) {
+  document.getElementById('delete-endpoint-id').value = id;
+  document.getElementById('delete-endpoint-name').textContent = name;
+  document.getElementById('delete-endpoint-error').style.display = 'none';
+  showModal('delete-endpoint-modal');
+}
+
+async function confirmDeleteEndpoint() {
+  const id = document.getElementById('delete-endpoint-id').value;
+  const errEl = document.getElementById('delete-endpoint-error');
+  const btn = document.getElementById('btn-endpoint-delete');
+  errEl.style.display = 'none';
+
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/endpoints/' + id, { method: 'DELETE' });
+    const data = await resp.json();
+    if (!resp.ok) {
+      errEl.textContent = data.error || 'Failed to delete endpoint.';
+      errEl.style.display = 'block';
+      return;
+    }
+    hideModal('delete-endpoint-modal');
+    refresh();
+  } catch (err) {
+    errEl.textContent = 'Request failed: ' + err.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ── Helpers ────────────────────────────────────────────
 function hexToDecimal(hex) {
   if (!hex || hex === '0x') return '0';
@@ -1207,6 +1387,8 @@ document.addEventListener('keydown', (e) => {
     unlockWithPassword();
   } else if (document.getElementById('import-modal').classList.contains('active')) {
     doImportKey();
+  } else if (document.getElementById('endpoint-modal').classList.contains('active')) {
+    saveEndpoint();
   }
 });
 </script>
